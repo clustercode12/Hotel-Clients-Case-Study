@@ -1,0 +1,1737 @@
+---
+title: "Hotel Clients Case Study"
+author: "Cluster Code"
+date: "11/22/2021"
+output: 
+  html_document:
+    fig_width: 10
+    fig_height: 10
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The goal of this project is to use the tools we have learned in class to predict a categorical variable and a numeric one using classification and regression ideas. The project is divided into two sub parts for each prediction: the first parts is the interpretation, where the main goal is to understand the data and how the variables relate to each other (with the use of statistical tools); and the other part is the prediction, where we try to maximize the accuracy of our model by reducing the cost of it (with the use of more complex and flexible methods such as machine learning).
+
+First and foremost, the cost of the errors in this data set has been invented, therefore they do not reflect the reality. Moreover, some code has been commented such as some models because they take too long to compute, but the results have been added. Otherwise, R cannot perform the conversion to HTML. With this said, let's start.
+
+# Initial Set-Up
+
+```{r message=FALSE, warning=FALSE}
+workingDirectory = ""
+setwd(workingDirectory)
+
+loadLibraries = function(libraries) {
+    for(lib in libraries) {
+        eval(parse(text = sprintf("library(%s)", lib)))
+        #install.packages(lib)
+        #trycatch
+    }
+}
+
+# All libraries that we are going to use.
+libraries = c("VIM", "rlang", "ggplot2", "caret", "tidyverse", "MASS", "e1071", 
+              "GGally", "tm", "SnowballC", "naivebayes", "skimr", "mice", 
+              "glmnet", "rpart", "pROC", "class", "randomForest", "dplyr", 
+              "factoextra", "foreach", "doParallel", "rpart.plot", "ggord", "fastDummies",
+              "ellipse")
+
+loadLibraries(libraries)
+
+rm(list = ls())
+```
+
+# Get the data
+
+The data set that we are going to be using in this project has been picked from kaggle (https://www.kaggle.com/mojtaba142/hotel-booking). The data is about two hotels (one from a city hotel and the other from a resort hotel) and their customers; the goal of this project is to predict if a customer will cancel the reservation or not given their booked information.
+
+```{r}
+hotel.df = read.csv("hotel_booking.csv", stringsAsFactors = TRUE)
+```
+
+Fist of all, we need to delete these variables (customer data) as they are invented by the creator and we do not really care much about them.
+
+```{r}
+colsToRemove = c("name", "email", "phone.number", "credit_card")
+hotel.df = hotel.df[, -which(names(hotel.df) == colsToRemove)]
+
+rm(colsToRemove)
+```
+
+Columns description
+
+- hotel: two types of hotel
+- is_canceled: booking is canceled (1) or not (0).
+- lead_time: number of days that elapsed between the entering date of the booking into the PMS and the arrival date.
+- arrival_date_year
+- arrival_date_month
+- arrival_date_week_number
+- arrival_date_day_of_month
+- stay_in_weekend_nights
+- adults
+- children
+- babies
+- meal
+- country
+- market_segment
+- distribution_channel 
+- is_repeated_guest
+- previous_cancellations
+- previous_booking_not_canceled
+- reserved_room_type
+- assigned_room_type
+- booking_changes
+- deposit_type
+- agent
+- company
+- days_in_waiting_list
+- customer_type
+- adr: average daily rate
+- required_car_parking_spaces
+- total_of_speacial_requests
+- reservation_status
+- reservation_status_date
+
+Now, let's take a look at the data and see what we are working with.
+
+```{r}
+summary(hotel.df)
+```
+
+## Missing values
+
+```{r}
+aggr(hotel.df, numbers = TRUE, sortVars = TRUE, labels = names(hotel.df), cex.axis = .5, gap = 1)
+```
+
+We can see that there are some missing values. so we will see if they are mainly one column that we can delete or just rows.
+
+```{r}
+length(which(!complete.cases(hotel.df)))
+```
+
+Take a look that there are not that many in comparison with the total number of rows, so we could just delete those customers.
+
+```{r}
+hist(rowMeans(is.na(hotel.df)), xlab = c("Missing values average by rows"), main = c())
+```
+
+Here, we can see that the rows are not really that empty, so let's look at the columns.
+
+```{r}
+indexesEmptyCols = which(colMeans(is.na(hotel.df)) != 0)
+
+colsWithNA = sort(colMeans(is.na(hotel.df[, indexesEmptyCols])), 
+                  decreasing = TRUE)
+
+barplot(colsWithNA, las=2)
+```
+
+The columns company and agent are the ones that are most empty, so let's remove them.
+
+```{r}
+indexesColsToRemove = c()
+for (i in names(colsWithNA)[1:2]) {
+    indexesColsToRemove = c(indexesColsToRemove, which(names(hotel.df) == i))
+}
+
+hotel.df = hotel.df[, -indexesColsToRemove]
+```
+
+Here, we clear our working environment.
+
+```{r}
+rm(list = setdiff(ls(), "hotel.df"))
+```
+
+Let's take a look at how many missing values there are left.
+
+```{r}
+length(which(!complete.cases(hotel.df)))
+```
+
+There are only 4, so let's remove them.
+
+```{r}
+hotel.df = hotel.df[-which(is.na(hotel.df[, 11]) == T), ]
+```
+
+Now, there are sometimes that the missing values are in the factor variables and are not clearly visible. So let's take a look at the factor variables and see if there are any.
+
+```{r}
+hotel.df = droplevels.data.frame(hotel.df)
+
+colsWithEmptyFactors.df = data.frame(colName = character(), 
+                                     index = integer(), 
+                                     naNumber = integer(), 
+                                     stringsAsFactors = FALSE)
+
+for (i in 1:ncol(hotel.df)) {
+    levels = levels(hotel.df[, i])
+    if ("" %in% levels) {
+        colsWithEmptyFactors.df = rbind(colsWithEmptyFactors.df, 
+                                        data.frame(colName = names(hotel.df)[i], 
+                                                   index = i, naNumber = 0,
+                                                   stringsAsFactors = FALSE))
+    }
+}
+```
+
+```{r}
+for (i in 1:nrow(colsWithEmptyFactors.df)) {
+    index = colsWithEmptyFactors.df$index[i]
+    
+    level = levels(hotel.df[, index])
+    level[which(level == "")] = NA
+    levels(hotel.df[, index]) = level
+    
+    colsWithEmptyFactors.df[i, 3] = length(which(is.na(hotel.df[, index]) == TRUE))
+}
+
+print(colsWithEmptyFactors.df)
+```
+
+We see that there were hidden! But they are just 488 compared to the total 110.000. So let's just remove them.
+
+```{r}
+indexesEmptyRows = which(rowMeans(is.na(hotel.df))!= 0)
+
+hotel.df = hotel.df[-indexesEmptyRows,]
+
+print(length(which(is.na(hotel.df) == TRUE)))
+```
+
+After cleaning the data set, let's start with some feature analysis and maybe perform a new feature that will be helpful for our models.
+
+```{r}
+rm(list = setdiff(ls(), "hotel.df"))
+```
+
+# Feature Analysis
+
+```{r}
+glimpse(hotel.df)
+```
+
+At first sight, we see a ton of variables that need to be fixed and tweaked. So let's start defining a function that will take care for most of the work.
+
+```{r}
+REMOVE = "remove"
+TO_FACTOR = "toFactor"
+TO_INTEGER = "toInteger"
+TO_LOGIC = "toLogic"
+TO_CHARACTER = "toCharacter"
+
+editColumn = function(colNames, df, toDo) {
+    index = which(names(df) == colNames)
+
+    if (!is_empty(index)) {
+        if (toDo == REMOVE) {
+            df = df[, -index]
+        } else if (toDo == TO_FACTOR) {
+            df[, index] = as.factor(df[, index])
+        } else if (toDo == TO_INTEGER) {
+            df[, index] = as.integer(df[, index])
+        } else if (toDo == TO_LOGIC) {
+            df[, index] = as.logical(df[, index])
+        } else if (toDo == TO_CHARACTER) {
+            df[, index] = as.character(df[, index])
+        } else { errorCondition("Could not perform that action.")}
+    }
+    
+    return(df)
+}
+```
+
+In the data set, we can clearly see that the our variable that we want to predict is not a very descriptive, so let's solve this. 
+
+```{r}
+hotel.df = editColumn(c("children"), hotel.df, TO_INTEGER)
+
+hotel.df = editColumn(c("is_canceled"), hotel.df, TO_LOGIC)
+hotel.df = editColumn(c("is_canceled"), hotel.df, TO_FACTOR)
+levels(hotel.df$is_canceled) = c("no", "yes")
+
+hotel.df = droplevels.data.frame(hotel.df)
+
+summary(hotel.df$is_canceled)
+```
+
+Now, let's change the arrival_date_month to a number for better date representation.
+
+```{r}
+levels(hotel.df$arrival_date_month)
+months.df = data.frame(months = c("January", "February", "March", "April", 
+                                  "May", "June", "July", "August", "September",
+                                  "October", "November", "December"), number = 1:12)
+
+changeMonthToNumber = function(x) {
+  index = which(x == months.df$months)
+  
+  if (!is_empty(index)) {
+    return(months.df$number[index])
+  }
+  
+  return(0)
+}
+
+
+hotel.df = editColumn(c("arrival_date_month"), hotel.df, TO_CHARACTER)
+dim(hotel.df$arrival_date_month) = length(hotel.df$arrival_date_month)
+
+hotel.df$arrival_date_month = apply(hotel.df$arrival_date_month, 1, changeMonthToNumber)
+
+summary(hotel.df$arrival_date_month)
+```
+
+And we will do the same thing we did to the is_canceled variable to the is_repeated_guest as they are the same type.
+
+```{r}
+hotel.df = editColumn(c("is_repeated_guest"), hotel.df, TO_LOGIC)
+hotel.df = editColumn(c("is_repeated_guest"), hotel.df, TO_FACTOR)
+levels(hotel.df$is_repeated_guest) = c("no", "yes")
+
+summary(hotel.df$is_repeated_guest)
+```
+
+Looking at the reservation_status_date, we see that it is a date, but it is not in a very clear format. So let's change it and make three columns, one for the day, one for the month, and the last for the year.
+
+```{r}
+hotel.df = editColumn(c("reservation_status_date"), hotel.df, TO_CHARACTER)
+dim(hotel.df$reservation_status_date) = length(hotel.df$reservation_status_date)
+
+separateDate = function(x) {
+  return(as.integer(unlist(strsplit(x, "-"))))
+}
+
+zero.vector = rep(0, nrow(hotel.df))
+
+reservationDate.df = data.frame(reservation_status_date_year = zero.vector, 
+                                reservation_status_date_month = zero.vector, 
+                                reservation_status_date_day = zero.vector)
+
+hotel.df = cbind(hotel.df, reservationDate.df)
+
+
+hotel.df[, (ncol(hotel.df) - 2):(ncol(hotel.df))] = t(apply(hotel.df$reservation_status_date, 1, separateDate))
+
+hotel.df = hotel.df[, -(ncol(hotel.df) - 3)]
+```
+
+And clean the environment.
+
+```{r}
+rm(list = setdiff(ls(), "hotel.df"))
+```
+
+We can detect that the reservation_status is strongly correlated with the is_canceled variable that we are trying to predict, so let's take a look if that is really the case.
+
+```{r}
+ggplot(data = hotel.df, aes(x = reservation_status, y = is_canceled)) + geom_boxplot()
+```
+
+Here we can clearly see that we were right. Both variables are pretty much the same. Therefore we will delete it and the date according to those variables as they are not meaningful anymore.
+
+```{r}
+hotel.df = hotel.df[, -((ncol(hotel.df) - 3):ncol(hotel.df))]
+```
+
+And, finally let's make our variable that we want to predict our first one for the shake of simplicity.
+
+```{r}
+colOrder = 1:ncol(hotel.df)
+colOrder[2] = 1
+colOrder[1] = 2
+
+hotel.df = hotel.df[, colOrder]
+```
+
+## Variable Similarity
+
+Here, we will study the relation of each variable with respect to each other and see if there are any variables worth removing or worth taking more importance.
+
+First, let's create the dummy variables for our data set. For this, we will remove the countries as it has a lot of factors.
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "country")]
+```
+
+Now let's look at the reserved_room_type and the assigned_room_type, because it will give us some errors afterwards with the models.
+
+```{r}
+(which(hotel.df$reserved_room_type == "P"))
+
+(which(hotel.df$assigned_room_type == "P"))
+```
+
+Here we see that there is a room type that only two customers have selected so let's delete it because otherwise it will break our models.
+
+```{r}
+hotel.df = hotel.df[-which(hotel.df$reserved_room_type == "P"),]
+
+hotel.df = droplevels.data.frame(hotel.df)
+```
+
+After this, let's use the Fast Dummy library in order to create the dummy variables. But, let's keep the is_canceled column as a factor as it is the one that we want to predict.
+
+```{r}
+indexFactors = names(which(sapply(hotel.df, is.factor) == TRUE)[])
+indexFactors = indexFactors[-1]
+
+hotel.df = dummy_cols(hotel.df, select_columns = indexFactors, remove_selected_columns = TRUE)
+
+summary(hotel.df)
+```
+
+We can see that all the variables are now ready to process. Addressing the problem of "Curse of Dimensionality", it is true that we have increased it a ton, but as we have a lot more observations, we are good to go without having this problem. It is true that caret would take care of all the dummy creations, but as we want to know more in depth the realtionship we have opted to created the our own.
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "is_repeated_guest_no")]
+```
+
+We remove some extra varaibles that are redundant.
+
+So, let's take a look at the correlation of the variables.
+
+```{r}
+df = cbind(is_canceled = as.numeric(hotel.df$is_canceled), hotel.df[, -1])
+R = cor(df)
+
+ggcorr(df, cor_matrix = R, label = TRUE)
+```
+
+If we zoom a bit, we can tell that the reserved_room_type is really similar to the assigned one. However, we will keep it as our model could look at this difference to predict better. It happens the same with the market and distribution variable.
+
+Also, the created dummy variables are highly correlated but that makes sense, therefore we won't do anything to them.
+
+Moreover, we see that the arrival_date_week_number is just the same as the month so we will remove it.
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "arrival_date_week_number")]
+
+rm(list = c("R", "colOrder"))
+```
+
+Finally lets take a look at some pca to see which variables are really important, so we understand better what the models will do when they predict.
+
+```{r}
+pca = prcomp(df)
+fviz_contrib(pca, choice = "var", axes = 1)
+```
+
+As usual, the pca without scaling is not really that useful, so let's scale the data.
+
+```{r}
+pca_scaled = prcomp(scale(df))
+fviz_contrib(pca_scaled, choice = "var", axes = 1)
+```
+
+Here we can really see that the variables are somewhat correlated. We can see that the date does not really matter, nor the babies or the meal. However the room_type is really important as the deposit_type or the room_type.
+
+Now that we have somewhat an idea about our data set, let's try to visualize it and see if we find any perceptions that we can further use in our analysis.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df", "hotel.numeric.df", "dfToNumeric")))
+```
+
+## Visualization
+
+First things first, let's plot the correlation of all the variables with respect to the is_canceled one and see if there are any really important ones.
+
+```{r}
+corr_cancelled = sort(cor(hotel.df[,-1])[1,], decreasing = T)
+
+corr = data.frame(corr_cancelled)
+
+ggplot(corr,aes(x = row.names(corr), y = corr_cancelled)) + geom_bar(stat = "identity") + 
+  scale_x_discrete(limits= row.names(corr)) +  labs(x = "", y = "is_canceled", title = "Correlations") + 
+  theme(plot.title = element_text(hjust = 0, size = rel(1.5)), axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Here, we can clearly see that the hotel is the most important variable, and this could mean that there is one hotel that a lot of customers cancel their reservation. Moreover, the room type is also important as we saw with the PCA. And the date it is not that important.
+
+Now, let's plot each variable boxplot regarding the is_canceled one.
+
+```{r}
+featurePlot(x = hotel.df[, -1], 
+            y = hotel.df[, 1], 
+            plot = "box",
+            strip=strip.custom(par.strip.text=list(cex=.7)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+```
+
+We first see an outlier in the adr so we will remove it. Also we can see that the hotel boxplot is really similar so we will take a further look on that. And the dates are not that important, but the year is. So let's remove those variables so we reduce some noise.
+
+```{r}
+hotel.df = hotel.df[-which(hotel.df$adr > 1000),]
+```
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "arrival_date_month")]
+hotel.df = hotel.df[, -which(names(hotel.df) == "arrival_date_day_of_month")]
+```
+
+Clean the environment.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df")))
+```
+
+# Classification
+
+## Setup
+
+The first part is to divide the data set into three parts. One for the final testing (only used for the final model chosen), other for the testing of all the models and the last ones for the training. As the data set is huge, we will reduced the training data set size for shake of time and efficiency.
+
+```{r}
+indexes.test.final = createDataPartition(hotel.df$is_canceled, p = 0.3, list = FALSE)
+
+hotel.test.final = hotel.df[indexes.test.final, ]
+
+indexes.test = createDataPartition(hotel.df$is_canceled[-indexes.test.final], p = 0.5, list = FALSE)
+
+hotel.test = hotel.df[indexes.test, ]
+hotel.train = hotel.df[-indexes.test, ]
+```
+
+Now, let's set up caret. It will be our main package that we will use. So let's define some functions that will speed up our work substantially.
+
+Let's separate the data set into the independent variables and the dependent one.
+
+```{r}
+X.train = hotel.train[, -1]
+y.train = hotel.train[, 1]
+
+X.test = hotel.test[, -1]
+y.test = hotel.test[, 1]
+```
+
+Because we are processing really complex models later on, we will be loading the binaries to speed up the process when creating the HTML file (take care all models have been run and tested before hand). Due to this let's load the training and test data that we used to generate those binaries.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df")))
+
+load("bin/data_partition.RData")
+```
+
+### Caret Automation
+
+In this approach, we will use cross validation 5 fold repeated 3 times. It is not that detailed, but because of the size of the data set otherwise we will spend years training the models. Also we will use parallel computing to speed up the process.
+
+Moreover, we will use the kappa to measure the accuracy of the model, as it is better that the average. As it measures the agreement of different assessments of the model with the same target.
+
+Finally, we will compute the confusion matrix all in this functions, this will make a lot easier the processing of different models. Note that the function has been tune for some data set so they work with the models used in this work.
+
+```{r}
+runCaret = function(method, x, y, grid = NULL, x_test = NULL, y_test = NULL, family_model = NULL, preProcess = NULL) {
+  
+  env <- foreach:::.foreachGlobals # remove previous parallel computing instances.
+  rm(list=ls(name=env), pos=env)
+  
+  if (method == "svmLinearWeights2") {
+    trainControl = trainControl(method="repeatedcv", number = 5, repeats = 3,
+                                savePredictions=TRUE)
+  } else {
+    trainControl = trainControl(method="repeatedcv", number = 5, repeats = 3,
+                                savePredictions=TRUE, classProbs=TRUE)
+  }
+  
+  cores = detectCores() - 1
+  cl = makeCluster(cores)
+  registerDoParallel(cl)
+  
+  tryCatch(
+    if (is.null(family_model)) {
+      model = train(x = x,
+                  y = y,
+                  method = method,
+                  trControl = trainControl,
+                  tuneGrid = grid,
+                  metric = "Kappa",
+                  preProc = preProcess)
+    } else {
+      model = train(x = x,
+                  y = y,
+                  method = method,
+                  trControl = trainControl,
+                  tuneGrid = grid,
+                  metric = "Kappa", 
+                  family = family_model,
+                  preProc = preProcess)
+    })
+  
+  stopCluster(cl)
+  
+  pred = predict(model, newdata = x_test)
+  
+  if (method == "svmLinearWeights2") {
+    prob = pred
+  } else {
+    prob = predict(model, newdata = x_test, type = "prob")
+  }
+  
+  CM = confusionMatrix(pred, y_test)
+  
+  print(paste(method, " used"))
+  print(CM)
+  
+  return(list(model, prob, CM))
+}
+```
+
+## Interpretation Classification
+
+First, we will be using models that are not flexible (low variance, high bias) in order to try to figure out how the variable is_canceled is predicted and how it relates to the others. That is we will first use statistical tools to get a feel of what is happening, and then machine learning tools to really try to predict the best way without taking care of what is going on inside.
+
+### Simple Decission Trees
+
+In this approach, we will use the most basic tree so we can see what variables are important to predict.
+
+```{r}
+dt_grid = expand.grid(cp = seq(0.2, 2, 0.2))
+
+model.dt = runCaret("rpart", X.train, y.train, grid = dt_grid, x_test = X.test, y_test = y.test)
+```
+
+Looking at the confusion matrix, we see that the accuracy is not that bad (0.64) for this simple model. But the kappa is a little bit terrible (0.31). However, the most concerning part is the false negative (specificity) it is really low (0.33). So we will take a closer look at that.
+
+But first, let's see the tree.
+
+```{r}
+rpart.plot(model.dt[[1]]$finalModel, digits = 3)
+```
+
+The most important variable for the simple tree is the deposit_type which is directly correlated with the refundable part. This could mean that the customers that can refund their reservation if they cancel are more likely to do that those who don't. This in the real world has a lot of sense and can be one of the most determinant factors.
+
+With this conclusion, we can asses the hotel manager to not include refund in order to reduce the number of cancellations, however this can have a really strong impact on those. It probably reduce the number of cancellation but it will also reduce the number of reservations.
+
+So let's keep digging as see if we find more similarities.
+
+### Bayes Classifiers
+
+#### Linear Discriminant Analysis
+
+```{r}
+#model.lda = runCaret("lda", X.train, y.train, x_test = X.test, y_test = y.test)
+```
+
+Comparing the CM, we see that it has a higher kappa (0.352), accuracy (0.6655) and a higher specificity (0.4). But let's see why.
+
+As LDA focuses on projecting the features in high dimension space into a lower one, it could have found a better way of separating the data than the decision tree.
+
+```{r}
+#ggord(model.lda[[1]]$finalModel, y.train)
+
+load("bin/lda.RData")
+```
+
+We cannot visualize the LDA in a graph as it has only one LDA so it would be a line. However we can look at the model itself and see if we reach any conclusion.
+
+```{r}
+model.lda[[1]]$finalModel
+```
+
+If we look at the coefficients for LDA1, we see that the deposit_type is the variable with the highest absolute value, therefore the most important (as the decision tree told us). More over there are other not so important variables such as required_car_parking_spaces, total_of_special_requests or the market_segment.
+
+- Assigned_room_type_L (positive): it looks like the clients that where assigned the room L canceled it. So we can conclude that room type L is pretty bad.
+
+- Deposit_type_no_deposit and deposit_type_refundable (negative): this could reflect that those customers that are not able to get back their money or have not put any money are less likely to cancel.
+
+- Deposit_type_non_refund (positive): if a customer is not eligible for a refund, they are more likely to cancel the reservation.
+
+- Required_car_parking_spaces (negative): this could mean that if a customer requires parking, they are less likely to cancel the reservation.
+
+- Total_of_special_requests (negative): this could mean that if a customer has a lot of special requests (is picky), then the customer is likely to really want the hotel and have less probability to cancel it.
+
+- Market_segment_complementary (positive): this could mean that all the complementary customers are likely to cancel.
+
+```{r}
+plot(varImp(model.lda[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+When we take a look at the variable importance of the LDA model, we can see that the conclusions are different. This is because just at looking at the coefficients does not give us any real hint because having a strong relationship with the predicted variable does not mean that is that important to the model. One hypothesis can be if the predictor variable has little variance and the predicted variable has high variance, then a standard 1 increase in the predictor variable can lead to a big increase in the predicted variable.
+
+Here we can see that the most important variables are lead_time, deposit_type (as before) and total_of_special_guests.
+
+```{r}
+plot.roc(y.test, model.lda[[2]][,2], col="darkblue", print.auc = TRUE,  auc.polygon=TRUE, grid=c(0.1, 0.2),
+         grid.col=c("green", "red"), max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue", print.thres=TRUE)
+```
+
+After computing the ROC curve we can see that the AUC is 0.83 and we will use it to compare to other models to see which one is better.
+
+```{r}
+# runCaret("lda", X.train, y.train, x_test = X.test, y_test = y.test, preProcess = c("center", "scale"))
+```
+
+Output
+
+```
+[1] "lda  used"
+Confusion Matrix and Statistics
+
+          Reference
+Prediction    no   yes
+       no  19280 13543
+       yes   375  8416
+                                         
+               Accuracy : 0.6655         
+                 95% CI : (0.661, 0.6701)
+    No Information Rate : 0.5277         
+    P-Value [Acc > NIR] : < 2.2e-16      
+                                         
+                  Kappa : 0.3518         
+                                         
+ Mcnemar's Test P-Value : < 2.2e-16      
+                                         
+            Sensitivity : 0.9809         
+            Specificity : 0.3833         
+         Pos Pred Value : 0.5874         
+         Neg Pred Value : 0.9573         
+             Prevalence : 0.4723         
+         Detection Rate : 0.4633         
+   Detection Prevalence : 0.7887         
+      Balanced Accuracy : 0.6821         
+                                         
+       'Positive' Class : no   
+```
+
+If we scale and center the data, then there is no notizable improvement, and a decrease in the kappa. This can be as we have so many dummy variables that the data does not have its columns really that different.
+
+#### Quadratic Discriminant Analysis
+
+```{r}
+#model.qda = runCaret("qda", X.train, y.train, x_test = X.test, y_test = y.test)
+```
+
+Output
+
+```
+Something is wrong; all the Kappa metric values are missing:
+    Accuracy       Kappa    
+ Min.   : NA   Min.   : NA  
+ 1st Qu.: NA   1st Qu.: NA  
+ Median : NA   Median : NA  
+ Mean   :NaN   Mean   :NaN  
+ 3rd Qu.: NA   3rd Qu.: NA  
+ Max.   : NA   Max.   : NA  
+ NA's   :1     NA's   :1   
+```
+
+We cannot derive any meaningful information from the QDA, therefore we will skip it.
+
+### Naïve-Bayes Classification
+
+```{r}
+prop.table(table(y.train))
+```
+
+Here we see that using a Naïve classification of just predicting all the customers will not cancel the reservation is not a good idea because our accuracy will just only be 0.71. It is true that with the tools that we have used so far, it is the best prediction but let' see if we can improve it.
+
+#### Classic Naïve Bayes
+
+```{r}
+#naive_bayes_grid = expand.grid(laplace = c(0,0.5,1.0), usekernel = TRUE, adjust=c(0,0.5,1.0))
+
+#model.nb = runCaret("naive_bayes", X.train, y.train, grid = naive_bayes_grid ,x_test = X.test, y_test = y.test)
+
+load("bin/nb.RData")
+
+model.nb[[3]]
+```
+
+Using the Naïve Bayes approach, we see that the accuracy and the kappa decrease. However, let's see if the variables are similar to the LDA.
+
+```{r}
+plot(varImp(model.nb[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here, we see that the most important variables are the lead_time, deposit_type, and total_special_requests. The last two are repeated and have almost the same value as the first one so our hypothesis is supported by this model also.
+
+Also we will add to the hypothesis, that the earlier a customer has booked the hotel (in comparison to their arrival date) the less likely they are to cancel the reservation on average. 
+
+#### Variational Bayesian Multinomial Probit Regression
+
+Here we are using a model similar to the multinomial bayesian model that is provided by R.
+
+```{r}
+# naive_bayes_multinomial_grid = expand.grid(estimateTheta = seq(0, 2, 0.2))
+
+#model.nb.multinomail = runCaret("vbmpRadial", X.train, y.train, grid = naive_bayes_multinomial_grid ,x_test = X.test, y_test = y.test)
+```
+
+Does not work, as our data set is very big to use this model.
+
+### Other Interpretation Models (GLM)
+
+#### Logistic Regression
+
+```{r}
+# model.lr = runCaret("glm", X.train, y.train, x_test = X.test, y_test = y.test, family_model = "binomial")
+
+load("bin/logr.RData")
+```
+
+```{r}
+model.lr[[3]]
+```
+
+After running the logistic regression, we can tell that it is performing worse than the LDA, but let's see if we can draw some conclusions.
+
+```{r}
+model.lr[[1]]$finalModel$coefficients[sort(abs(model.lr[[1]]$finalModel$coefficients), decreasing = T, index.return = T)[[2]]]
+```
+
+Here we can see that the most important variables were: assigned_room_type_C, market_segment_Offline TA/TO, market_segment_Groups, 
+required_car_parking_spaces, and distribution_channel_Corporate. For this, we clearly see that there are some similarities with LDA but not that many. This enforces our hypothesis with the market_segment_Groups, distribution_channel_Corporate, and required_car_parking_spaces but not the rest. This could be because the model is focusing on less important variables therefore giving a inferior kappa and accuracy.
+
+```{r}
+plot(varImp(model.lr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here, we see that if a customer is required a parking space then it is less likely to cancel the reservation on average (negative beta). And also customers that have cancelled before are more likely to cancel on average.
+
+### Conclusions
+
+After using all the statistical tools, we conclude with the following hypothesis:
+
+- Customers that do not have to pay upfront the hotel or that it is refundable, they are more likely to cancel the reservation on average.
+- Customers that require parking space are less likely to cancel.
+- Customers that book a lot of time before their arrival time are less likely to cancel on average.
+- Customers that have canceled before are more likely to cancel on average.
+
+If we think a bit, this really make sense and we can asses the hotels in order to reduce the number of clients that cancel. It is true that we can differentiate between both hotels and see if the customer that leave one hotel are differents from the other hotel, but it is far from the goal of this project.
+
+## Prediction Classification
+
+After taking a look at the best variables for our model, let's see if we can improve the kappa and the accuracy by using ML tools. For this we will use more flexible models with higher variance and see if the increase in variance accounts for a decrease in bias so we can predict better. Using this tools can be tricky and for the longest models, the binaries are going to be given or the output, otherwise it will take years to process.
+
+#### Penalalized Logistic Regression
+
+As the Logistic Regression has performed worse on average, let's see if the Penalized Logistic Regression is better.
+
+```{r}
+# model.plr = runCaret("plr", X.train, y.train, x_test = X.test, y_test = y.test)
+
+load("bin/plr.RData")
+```
+
+Output
+
+```{r}
+model.plr[[3]]
+```
+
+According to the confusion matrix we can see a huge increase in accuracy and kappa. If we dig deeper, we can see that PLR has increase  substantially the specificity (what we really want because of minimum cost) with with a trade off in sensitivity (which is understandable). 
+
+```{r}
+model.plr[[1]]$finalModel$coefficients[sort(abs(model.plr[[1]]$finalModel$coefficients), decreasing = T, index.return = T)[[2]][1:10]]
+```
+
+Here the predictors with the highest coefficients are deposit_type again, required_car_parking again, and previous_cancellations. Here we can really see that the first two must be really important to predict whether a client is going to cancel the reservation or not.
+
+```{r}
+plot(varImp(model.plr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here in the variable importance, we see the almost the same as the LDA, so our previous hypothesis is reinforces and we can say that in order to know if a customer is going to cancel the reservation on not, we could see those variables and assess the hotel to improve those in order to give a better service and reduce the cancellation ratio.
+
+### KNN
+
+```{r}
+# knn_grid = expand.grid(k = seq(2, 50, 4))
+
+# model.knn = runCaret("knn", X.train, y.train, grid = knn_grid ,x_test = X.test, y_test = y.test)
+
+load("bin/knn.RData")
+```
+
+```{r}
+model.knn[[3]]
+```
+
+Here we see that the kappa and the accuracy are better that Penalized Logistic Regression. And the specificity is much better, this is because of the trade off between variance and bias, we have used a more flexible model to predict better the bias with the trade off of a higher variance. Let's see which are the most important variables for KNN.
+
+```{r}
+plot(varImp(model.knn[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+As our hypothesis said, lead_time and deposit_type were really important, followed by special_requests. Therefore, we are pretty confident that the hotel will decrease the cancellation rate if it follows our recommendations.
+
+### SVM
+
+```{r}
+# svm_grid = expand.grid(cost = c(1, 2, 3), Loss = c(0.2, 0.5, 0.8),  weight = c(0.5, 1, 1.5))
+
+# model.svm = runCaret("svmLinearWeights2", X.train, y.train, grid = svm_grid ,x_test = X.test, y_test = y.test)
+
+load("bin/svm.RData")
+```
+
+```{r}
+model.svm[[3]]
+```
+
+After computing SVM, we see that the accuracy and the kappa are terrible so we won't handle this model. 
+
+### Random Forest
+
+```{r}
+# rf_grid = expand.grid(mtry = seq(1, 30, 3))
+
+# len = as.integer(nrow(hotel.train) / 2)
+
+# model.rf = runCaret("rf", X.train[1:len, ], y.train[1:len], grid = rf_grid ,x_test = X.test[1:len, ], y_test = y.test[1:len])
+```
+
+After trying multiple ways to try to perform Random Forest, we have concluded that with this data set cannot be performed. We have tried to shrink the rows by more than half, the columns also, and even perform less trees. However, in every try that we did, R just stopped and R Studio when blank.
+
+### Gradient-Boost
+
+```{r}
+# xgb_grid = expand.grid(nrounds = c(500,1000), max_depth = c(5,6,7), eta = c(0.01, 0.1, 1), gamma = c(1, 2, 3), colsample_bytree = c(1, 2), min_child_weight = c(1), subsample = c(0.2,0.5,0.8))
+
+# model.xgb = runCaret("xgbTree", X.train, y.train, grid = xgb_grid ,x_test = X.test, y_test = y.test)
+```
+
+It happened the same with gradient boosting, our computer just could not handle the insane model for this insane data. It did not matter if we reduced the obervations, the predictor variables, or the hyper parameters. Even after spending two days processing, nothing happened. Therefore, we have opted out to leave it.
+
+### Cost Improvement
+
+Now, let's see which is the best threshold for the probabilities to assign on observation as canceled or not. For this we will imagine some costs and then fit the model to reduce this cost. For this as we have too many observations we will just use some wide steps and the ROC curve. Also for the complex model we won't use it otherwise the computer would spend weeks computing the results. 
+
+```{r}
+cost.unit <- c(0, 50, 250, 70)
+```
+
+Let's use it for LDA as it is a simple model and it gave us pretty good kappa and accuracy
+
+```{r}
+model.lda = runCaret("lda", X.train, y.train, x_test = X.test, y_test = y.test)
+```
+
+```{r}
+plot.roc(y.test, model.lda[[2]][,2], col="darkblue", print.auc = TRUE,  auc.polygon=TRUE, grid=c(0.1, 0.2),
+         grid.col=c("green", "red"), max.auc.polygon=TRUE,
+         auc.polygon.col="lightblue", print.thres=TRUE)
+```
+
+```{r}
+EconomicCost <- function(data, lev = NULL, model = NULL) {
+  y.pred = data$pred 
+  y.true = data$obs
+  CM = confusionMatrix(y.pred, y.true)$table
+  out = sum(as.vector(CM)*cost.unit)/sum(CM)
+  names(out) <- c("EconomicCost")
+  out
+}
+```
+
+This is our function that predicts our cost for the model. So let's see what is the cost for the LDA.
+
+```{r}
+pred.lda = as.factor(ifelse(model.lda[[2]]$yes >= 0.5, "yes", "no"))
+
+EconomicCost(data = data.frame(pred  = pred.lda, obs = y.test))
+```
+
+```{r}
+env <- foreach:::.foreachGlobals # remove previous parallel computing instances.
+rm(list=ls(name=env), pos=env)
+
+ctrl = trainControl(method="repeatedcv", number = 5, repeats = 3,
+                                savePredictions=TRUE, summaryFunction = EconomicCost)
+
+model.lda.cost = train(x = X.train,y = y.train, method = "lda", trControl = ctrl, metric = "EconomicCost", maximize = F)
+
+model.lda.cost
+```
+
+Here we see that the cost is 52 compared to 95 gotten before. This is a huge improvement! Let's see the most important variables.
+
+```{r}
+plot(varImp(model.lda.cost, scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here we just see similar results as the LDA computes, therefore we will assume that caret has tweaked the betas but kept the same relationship.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df")))
+
+load("bin/data_partition.RData")
+```
+
+
+## Conclusion (Ensamble)
+
+Now, to make our final prediction, we will be using the best three models that in our case were: Penalized Logistic Regression, KNN, and LDA. We won't be using the cost improved LDA as the others are not improve so we will keep it the same for this example. We could improve the other two but the computer would spend weeks processing. 
+
+We are using the best three models to predict our final data set.
+
+For this, let's import the three models
+
+```{r}
+load("bin/lda.RData")
+load("bin/knn.RData")
+load("bin/plr.RData")
+```
+
+We are going to use the mode of the models.
+
+```{r}
+mode = function(v) {
+  uniqv = unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+```
+
+```{r}
+finalPrediction = function(data) {
+  pred.lda = predict(model.lda[[1]], newdata = data)
+  pred.plr = predict(model.plr[[1]], newdata = data)
+  pred.knn = predict(model.knn[[1]], newdata = data)
+
+  finalPred = apply(data.frame(pred.lda, pred.plr, pred.knn), 1, mode) 
+  return(finalPred)
+}
+```
+
+Here we construct the function that will take care of predicting at each model and making the mode. So, now that that's done, let's use the final test data set and see how well can we predict the data. For this let's separate the data first.
+
+```{r}
+X.test.final = hotel.test.final[, -1]
+y.test.final = hotel.test.final[, 1]
+```
+
+
+```{r}
+# pred.final = as.factor(finalPrediction(X.test.final))
+
+load("bin/classification.pred.final.RData")
+
+confusionMatrix(pred.final, y.test.final)
+```
+
+After looking at the confusion matrix it gives an accuracy of almost 0.8 and a kappa of 0.5. That is amazing! It is almost a 15% increase from the highest single model that we had. 
+
+We see that we can predict the customer that won't cancel pretty accurately but not so much the customers that will cancel. For this we could do the cost approach that we did previously with the final model, however it is out of the scope of this project.
+
+In conclusion, we could predict if a customer would cancel with approximately 80% confidence. This is pretty high and this will be crucial for the hotels.
+
+# Regression
+
+For this approach we will use the variable "adr" (average daily rate) to try to predict for a specific customer. For this approach let's tweak a little bit our data set.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df")))
+
+adrCol = which(names(hotel.df) == "adr")
+```
+
+
+```{r}
+colOrder = 1:ncol(hotel.df)
+colOrder[adrCol] = 1
+colOrder[1] = adrCol
+
+hotel.df = hotel.df[, colOrder]
+```
+
+We made the adr variable our first one for shake of simplicity.
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "is_canceled")]
+```
+
+We remove these variables, as we are not trying to predict the cancelation.
+
+And now, let's divide the data set.
+
+```{r}
+indexes.test.final = createDataPartition(hotel.df$adr, p = 0.3, list = FALSE)
+
+hotel.test.final = hotel.df[indexes.test.final, ]
+
+indexes.test = createDataPartition(hotel.df$adr[-indexes.test.final], p = 0.5, list = FALSE)
+
+hotel.test = hotel.df[indexes.test, ]
+hotel.train = hotel.df[-indexes.test, ]
+```
+
+```{r}
+X.train = hotel.train[, -1]
+y.train = hotel.train[, 1]
+
+X.test = hotel.test[, -1]
+y.test = hotel.test[, 1]
+```
+
+Now, we have our data set ready to perform regression.
+
+```{r}
+rm(list = setdiff(ls(), c("hotel.df")))
+
+load("bin/data_partition_regression.RData")
+```
+
+This is a check point with the data loaded. 
+
+```{r}
+runCaret = function(method, form, data, test, grid = NULL, family_model = NULL, preProcess = NULL) {
+  
+  env <- foreach:::.foreachGlobals # remove previous parallel computing instances.
+  rm(list=ls(name=env), pos=env)
+  
+  trainControl = trainControl(method="repeatedcv", number = 5, repeats = 3, allowParallel = T)
+  
+  cores = detectCores() - 1
+  cl = makeCluster(cores)
+  registerDoParallel(cl)
+  
+  tryCatch(
+    if (is.null(family_model)) {
+      model = train(form, 
+                    data,
+                  method = method,
+                  trControl = trainControl,
+                  tuneGrid = grid,
+                  preProc = preProcess)
+    } else {
+      model = train(form, 
+                    data,
+                  method = method,
+                  trControl = trainControl,
+                  tuneGrid = grid,
+                  family = family_model,
+                  preProc = preProcess)
+    })
+  
+  stopCluster(cl)
+  
+  pred = predict(model, test[, -1])
+  
+  cor.pred = cor(test[, 1], pred)^2
+  
+  print(paste(method, " used"))
+  print(model)
+  print(paste("R^2 of the testing is ", cor.pred))
+  
+  return(list(model, pred, cor.pred))
+}
+```
+
+We have tweaked slightly the function to acomodate better regression.
+
+## Visualization of adr Variable
+
+Here let's start first to visualized the data according to the adr variable
+
+```{r}
+ggcorr(hotel.df, label = TRUE)
+```
+
+If we just look at the adr correlations, we do not see any meaningful correlation with the other variables. However we see that the assigned_rooms have a really high correlation. This is clearly known as they come from the same factor variable and are just dummies. Therefore, we will have to take care with the collinearity in our models.
+
+```{r}
+corr_price <- sort(cor(hotel.train)["adr",], decreasing = T)
+
+corr=data.frame(corr_price)
+
+ggplot(corr,aes(x = row.names(corr), y = corr_price)) + 
+  geom_bar(stat = "identity", fill = "lightblue") + 
+  scale_x_discrete(limits= row.names(corr)) +
+  labs(x = "Predictors", y = "Price", title = "Correlations") + 
+  theme(plot.title = element_text(hjust = 0, size = rel(1.5)),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Here we see a really interesting graph. We see that the number of children and adults is strongly positively correlated with adr, and also the type of room. Moreover, other types of rooms such as A are negatively correlated (guess it is the cheapest type of room).
+
+```{r}
+rm(list = c("corr_price", "corr"))
+```
+
+Now let's see the distribution of the adr.
+
+```{r}
+hotel.train %>% ggplot(aes(x=adr)) + geom_density(fill = "black")
+```
+
+The distribution is not any smooth one, however we see like a sum of a normal distribution with median 100 aprox and a streched right side, and something weird at the beginning. So what about the log.
+
+```{r}
+hotel.train %>% ggplot(aes(x=adr)) + geom_density(fill="black") + scale_x_log10() 
+```
+
+Here we do see some improvement, and we have removed the left weird part. However, as there is not noticable improvement, let's use the normal adr without any change.
+
+```{r}
+ggplot(hotel.train, aes(x = (adults + children + babies), y=adr)) + ylab("adr") + 
+  geom_point(alpha=0.6) + ggtitle("Price per person")
+```
+
+Here we see some really interesting patterns, we see that the price slightly increases with the number of people at the beginning (with some outliers), but there are some really far points with adr = 0. Let's investigate a little bit.
+
+```{r}
+weirdIndexes = which(hotel.train$adr == 0 & (hotel.train$adults + hotel.train$children + hotel.train$babies) >= 15)
+
+View(hotel.train[weirdIndexes, ])
+```
+
+This looks like a promotion that the hotel did, so we will remove it, otherwise it will introduce a lot of noise in our model.
+
+```{r}
+hotel.train = hotel.df[-weirdIndexes, ]
+```
+
+Now let's clean the environment and perform some simple regressions to try to understand better the data.
+
+```{r}
+rm(list = ls())
+
+load("bin/data_partition_regression_ready.RData")
+```
+
+### Be Aware
+
+- Collinearity: as stated before, we will have to take real care as the majority of our columns come from the creation of dummy variables.
+
+- Overfitting: because of the large amount of columns that we have, we could have overfitting on our models. However it is true that the ration of rows vs columns is really high so this problem is slightly mitigated. The problem with overfitting will only be aware when we try to estimate the betas, not predicting.
+
+## Interpretation Regression
+
+Let's try fitting a simple MR and see the huge overfitting.
+
+```{r}
+model.mr = runCaret("lm", adr ~ ., hotel.train, test = hotel.test)
+```
+
+Our R² in the testing set using this model is 0.41. This is pretty bad and the first guess if because of the huge amount of overfitting that it has. However, let's see if we can draw some meaningful conclusions.
+
+```{r}
+plot(varImp(model.mr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here we see that the most important variable is the one giving if the Hotel is City Hotel. This can be because City Hotel is much expensive than the other one. This is a reasonable approach and let's see if it is true.
+
+```{r}
+mean(hotel.train$adr[which(hotel.train$`hotel_City Hotel` == 1)])
+```
+
+```{r}
+mean(hotel.train$adr[which(hotel.train$`hotel_City Hotel` == 0)])
+```
+
+Here we see that on average, City Hotel is 10 units more expensive than the other hotel. So this predictor will be very handy to predict the price per night.
+
+```{r}
+model.mr[[1]]$finalModel
+```
+
+```{r}
+qplot(model.mr[[2]], hotel.test[, 1]) + 
+  labs(title="Linear Regression Observed VS Predicted", x="Predicted", y="Observed") +
+  lims(x = c(0, 300), y = c(0, 300)) +
+  geom_abline(intercept = 0, slope = 1, colour = "blue")
+```
+
+And here we see the huge overfitting that we have. It is tremendous. What about if we scale the data.
+
+```{r}
+model.mr.scale = runCaret("lm", adr ~ ., hotel.train, test = hotel.test, preProcess = c("scale", "center"))
+```
+
+There is no improvement.
+
+```{r}
+qplot(model.mr.scale[[2]], hotel.test[, 1]) + 
+  labs(title="Linear Regression Observed VS Predicted", x="Predicted", y="Observed") +
+  lims(x = c(0, 300), y = c(0, 300)) +
+  geom_abline(intercept = 0, slope = 1.25, colour = "blue")
+```
+
+And the overfitting is the same.
+
+Now let's try to fit some other models with much less overfitting.
+
+### Hypothesis Model
+
+```{r}
+model.hmr = runCaret("lm", adr ~ lead_time + I(adults + children + babies) + `hotel_City Hotel` + 
+                      I(stays_in_weekend_nights + stays_in_week_nights),
+                    hotel.train, test = hotel.test)
+```
+
+Here we see that the testing R² is terrible 0.17. So we won't use this model. However, let's see the relationships.
+
+```{r}
+plot(varImp(model.hmr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here we see that the number of people is the most important variable. However, due to the low R² we would not trust this model at all.
+
+### Feature Engineering
+
+```{r}
+hotel.df$people = hotel.df$adults + hotel.df$children + hotel.df$babies
+```
+
+Just joined the three variables to see if it is a good predictor for our models.
+
+```{r}
+hotel.df = hotel.df[, -which(names(hotel.df) == "hotel_Resort Hotel")]
+```
+
+We remove the Resort Hotel as it is the same as the City Hotel but inverse.
+
+```{r}
+rm(list = ls())
+
+load("bin/data_partition_regression_ready_feature.RData")
+```
+
+Now we load the libraries to speed up the process.
+
+### Forward Regression
+
+```{r}
+# fwdr_grid = expand.grid(nvmax = 4:(ncol(hotel.train)-10))
+
+# model.fwdr = runCaret("leapForward", adr ~ ., hotel.train, test = hotel.test, grid = fwdr_grid)
+
+load("bin/fwdr.RData")
+```
+
+The best model was achieved with 51 variables with a R² in the testing set of 0.41, same as with all the variables. Therefore this method is better than the first one. This is because with less variables we can achieve the same R². What R² means is that 41% of the variance on the test set is explained by the model. That is that 59% is explained by just noise. This is not very good for predictions!
+
+So let's see the variables that are important for this model.
+
+```{r}
+plot(varImp(model.fwdr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here the most important variables are the reserved_room_type_A, the number of children and if the market segment is online. Now let's see their coefficients and see if it is a positive or negative relationship to draw some conclusions.
+
+```{r}
+model.fwdr[[1]]$bestTune
+```
+
+We see that the best tune is when it is 51.
+
+```{r}
+sort(coef(model.fwdr[[1]]$finalModel, 51), decreasing = T)
+```
+
+Here we see that reserved_room_type_A has a coefficient of -40, that is on average, a customer will pay 40 units less if they book a room type A in contrast to the normal.
+
+Also, the number of children has a coefficient of 16 (positive), that is on average, booking a room for children is more expensive than just booking a room for adults (8). That is children pay 8 units more compared to adults.
+
+This are really interesting conclusions as they are pretty accurate for what we expect. And have we decrease the overfitting?
+
+```{r}
+qplot(model.fwdr[[2]], hotel.test[, 1]) + 
+  labs(title="Linear Regression Observed VS Predicted", x="Predicted", y="Observed") +
+  lims(x = c(0, 300), y = c(0, 300)) +
+  geom_abline(intercept = 0, slope = 1, colour = "blue")
+```
+
+Slightly, but not a lot. The values that the observed are zero, probably are promotions as stated before, so in order to fix this we would need to as the manager of the data set to include another variable, called promotions to indicated when they are or not in order to predict more accurately. However, as this data set was not designed to predict this variable, then that is the reason why we get pretty low R².
+
+Now let's use some backwards regression, however we will expect to get the same results as forward regression.
+
+### Backward Regression
+
+```{r}
+bwdr_grid = expand.grid(nvmax = 4:(ncol(hotel.train)-10))
+
+model.bwdr = runCaret("leapBackward", adr ~ ., hotel.train, test = hotel.test, grid = bwdr_grid)
+```
+
+The same results we get as Forward Regression so there is no meaningful information we can extract form here. However let's see if the most important variables are the same.
+
+```{r}
+plot(varImp(model.bwdr[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+And they are exactly the same as expected. For this reason, we won't be using Stepwise Regression, as we will get the exact same results. The main conclusion that we get apart from some conclusions, is that this data set is not prepared to try to predict the variable adr and that is why we need as many as possible variables.
+
+### Custom model
+
+Let's create a model with less variables and try to get a similar R². Let's use the top 20 aprox variables. Let's try to reduce the overfitting.
+
+```{r}
+custom.model = adr ~ reserved_room_type_A + children + `market_segment_Online TA` + adults + 
+  assigned_room_type_A + market_segment_Groups + assigned_room_type_G + customer_type_Transient + assigned_room_type_F + 
+  total_of_special_requests + reserved_room_type_D
+
+model.custom.lr = runCaret("lm", custom.model,
+                    hotel.train, test = hotel.test)
+```
+
+It is pretty terrible to predict, therefore let's try to make some modifications.
+
+```{r}
+custom.model = adr ~ reserved_room_type_A + children + `market_segment_Online TA` + adults + 
+  assigned_room_type_A + market_segment_Groups + assigned_room_type_G + customer_type_Transient + assigned_room_type_F + 
+  total_of_special_requests + reserved_room_type_D + market_segment_Complementary + distribution_channel_Corporate
+
+model.custom.lr = runCaret("lm", custom.model,
+                    hotel.train, test = hotel.test)
+```
+
+We are getting the same results as we got with forward regression. If we add more variables, the R² increases. Therefore for this example let's use all the variables to predict adr. From a statistical view, it is pretty bad approach as we are adding so much noise to the model (overfitting). However, when we try to predict each variable, we see that it is the best way for this data set. The main reason is that this data set was prepared to classify customers if they were going to cancel their reservation or not, not to predict the average price per night, as this factor depends on so many things that are not expressed in the data set.
+
+### Ridge regression
+
+What about ridge regression. Is the penalization of higher dimension better so we do not end up with 51 variables in our model? Let's see.
+
+```{r}
+#ridge_grid = expand.grid(lambda = seq(0, .1, length = 100))
+
+#model.ridge = runCaret("ridge", adr ~ ., hotel.train, test = hotel.test, grid = ridge_grid)
+```
+
+```
+Something is wrong; all the RMSE metric values are missing:
+      RMSE        Rsquared        MAE     
+ Min.   : NA   Min.   : NA   Min.   : NA  
+ 1st Qu.: NA   1st Qu.: NA   1st Qu.: NA  
+ Median : NA   Median : NA   Median : NA  
+ Mean   :NaN   Mean   :NaN   Mean   :NaN  
+ 3rd Qu.: NA   3rd Qu.: NA   3rd Qu.: NA  
+ Max.   : NA   Max.   : NA   Max.   : NA  
+ NA's   :100   NA's   :100   NA's   :100  
+Error: Stopping
+In addition: Warning message:
+In nominalTrainWorkflow(x = x, y = y, wts = weights, info = trainInfo,  :
+```
+
+It is a shame but after trying multiple ways ridge regression, it did not work. The main problem, I think is beacuse of huge amount of dummy variables that this data set has, that if in a cross validation it did not get the whole value then it gives this error. I have tried removing, shinking the data, column wise or row wise but nothing.
+ 
+ What about not creating any dummy variables and let then caret take care of it.
+ 
+```{r}
+#rm(list = ls())
+
+#load("bin/data_partition_regression_ready_feature_no_dummy.RData")
+```
+
+```{r}
+#ridge_grid = expand.grid(lambda = seq(0, .1, length = 10))
+
+#model.ridge = runCaret("ridge", adr ~ ., hotel.train, test = hotel.test, grid = ridge_grid)
+```
+
+And nothing, it keeps breaking so let's skip it. It is a shame because ridge regression was really promising to reduce the dimensionality of our best model as it penalizes high dimension models. However, due to the enormous data set we are not able to perform it.
+
+### Lasso
+
+```{r}
+#lasso_grid = expand.grid(fraction = seq(0, .1, length = 100))
+
+#model.lasso = runCaret("lasso", adr ~ ., hotel.train[1:10000, ], test = hotel.test, grid = lasso_grid)
+```
+
+Same as ridge regression, as lasso is pretty similar, just not doing the squared normed of the beta for the penalization part, it does not work either. So let's see if Elastic Networks works for us.
+
+### Elastic Net
+
+```{r}
+#elastic_grid = expand.grid(alpha = seq(0, .2, 0.01), lambda = seq(0, .1, 0.01))
+
+#model.elastic = runCaret("glmnet", adr ~ ., hotel.train, test = hotel.test, grid = elastic_grid)
+
+load("bin/elastic.RData")
+```
+
+After computing the model we see that R² is just 0.4, same as the first model that we had. 
+
+```{r}
+plot(model.elastic[[1]])
+```
+
+```{r}
+model.elastic[[1]]$bestTune
+```
+
+And this makes our hypothesis stronger. It looks like the best mixing % is 0, that is the model needs as many variables as possible to improve its R². Also all the regularization parameters are the same, and that is really interesting (all the lambdas). That is that this data set is not really well suited to predict the adr variable, but let's see if we can draw some conclusions out of this model.
+
+```{r}
+plot(varImp(model.elastic[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+For this model the most important variables are the type of rooms a customer is assigned or reserved. This is really interesting as we saw that type A rooms were the cheapest ones but now lets see this ones.
+
+```{r}
+coef(model.elastic[[1]]$finalModel)[1:10, 1:10]
+```
+
+This does not give us any meaningful data because of the insane amount of predictors that we have, therefore let's use our simple model.
+
+```{r}
+qplot(model.elastic[[2]], hotel.test[, 1]) + 
+  labs(title="Linear Regression Observed VS Predicted", x="Predicted", y="Observed") +
+  lims(x = c(0, 300), y = c(0, 300)) +
+  geom_abline(intercept = 0, slope = 1, colour = "blue")
+```
+
+Woh! Here we see some improvemnt in the overfitting. It is true that the models keep trying to predict less than it really is. That is the models under price on average. However, there is less overfitting.
+
+```{r}
+elastic_grid = expand.grid(alpha = seq(0, .2, 0.01), lambda = seq(0, .1, 0.01))
+
+model.elastic.simple = runCaret("glmnet", custom.model, hotel.train, test = hotel.test, grid = elastic_grid)
+```
+
+Oh this is really terrible. This model is 25% worse than the previous, however let's see if we can draw any assumptions.
+
+```{r}
+plot(varImp(model.elastic.simple[[1]], scale = F), scales = list(y = list(cex = .95)))
+```
+
+Here we see that again, elastic net focuses more on the room type and market segment. So let's take a look at the coefficients.
+
+```{r}
+coef(model.elastic.simple[[1]]$finalModel)[1:10, 1:10]
+```
+
+Here we see the following:
+
+- Market_segment_Complementary (strongly negative): we see than on average the market segment average night price is 25 price units less than the average. This can be because this segment goes to the room_type_A (cheaper as we saw) or it has some special deal with the hotel.
+
+- Reserved_room_type_A (negative): on average this type of room is 5 unit price less than the averse, as we knew.
+
+- Children (positive): as we saw children are more expensive than adults.
+
+### Conclusions
+
+So the conclusions that we got to understand the price of a specific customer are:
+
+- The room type A is the cheapest.
+
+- Children tend to pay more on average.
+
+- The market segment complementary just books all the type A rooms or as some special deals with the hotel. That is becuase is the segment with the lowest average adr.
+
+Now, will the graphs say the same as our conclusions?
+
+```{r}
+ggplot(hotel.train) + aes(x = as.factor(assigned_room_type_A), y = adr) + geom_boxplot()
+```
+
+Awesome! Our first conclusion was correct, and we see that on average room type A are cheaper than the others.
+
+```{r}
+ggplot(hotel.train) + aes(x = as.factor(children), y = adr) + geom_boxplot()
+```
+
+And also correct, the more children in a reservation the higher the price.
+
+```{r}
+ggplot(hotel.train) + aes(x = as.factor(market_segment_Complementary), y = adr) + geom_boxplot()
+```
+
+And woh! that is a really big difference. We could further study why this segment has less adr on average, but that is out of scope. Now let's try to predict better the adr variable (now we are doing a little bit poorly).
+
+NOTE: if we use statistical tools we can see that this variables are the most important to predict the variable adr, however as is later shown; if we fit non-linear models (more flexible ones) we see that the number of people is the most important variable and also the room type A. If we use linear model they do not show that clearly because their relationship is not linear therefore is not noticible with statistical tools. However we could try to compute the second order polynomial or more to see if that is really the case. But let's now try to predict.
+
+## Advanced Tools for Regression
+
+### KNN
+
+For KNN we will standardized the data, because otherwise the year variable and other with high number will distrupt the small ones. It is always a good idea to standardized the data in KNN.
+
+```{r}
+# knn.reg_grid = data.frame(kmax=c(11,13,15,19,21),distance=2, kernel='optimal')
+
+# model.knn.reg = runCaret("kknn", adr ~ ., hotel.train, test = hotel.test, grid = knn.reg_grid, preProcess = c("center", "scale"))
+
+load("bin/kknn.RData")
+
+model.knn.reg[[3]]
+```
+
+It is impressive that knn gives an R² of 0.53. It is a huge leap from what we where.
+
+```{r}
+model.knn.reg[[1]]
+```
+
+Here we see that more neighbors that we choose the better. This is the same thing with our previous assumption that the more columns that we got the better. And our hypothesis is further proven, this data set is not suited to predict the adr and that is the reason why it needs so many neighbors. Also, we can derive from this, that due to the huge data set that we have, we need a lot of neighbours to predict more accurately. However, this k was the max that our computer could handle, otherwise it just kept breaking. But, this is the best model so far.
+
+```{r}
+plot(model.knn.reg[[1]])
+```
+
+This graph shows what we had said previously.
+
+```{r}
+plot(varImp(model.knn.reg[[1]], scale = T), scales = list(y = list(cex = .95)))
+```
+
+This are some really impressive results. It looks like the variable that we created, is the most important. So we could add to our hypothesis that the number of people for each reservation is highly correlated with the price on average. Also, as stated before, the room type A is pretty important, and the number of children.
+
+### Random Forest
+
+```{r}
+#rf_grid = data.frame(mtry = seq(1, 15, 3))
+
+#model.rf = runCaret("rf", adr ~ ., hotel.train, test = hotel.test, grid = rf_grid)
+```
+
+After multiple attempts trying to make it work, we have concluded that this data set is too complex for our computer to handle random forest,, therefore we will leave it for now.
+
+### Gradient Boosting
+
+```{r}
+# gradient_grid = expand.grid(nrounds = c(500,1000), max_depth = c(5,6,7), eta = c(0.01, 0.1, 1),
+#                                          gamma = c(1, 2, 3), colsample_bytree = c(1, 2),
+#                                         min_child_weight = c(1), subsample = c(0.2,0.5,0.8))))
+
+#model.xgb = runCaret("xgbTree", adr ~ ., hotel.train, test = hotel.test, grid = gradient_grid)
+```
+
+Same as the Random Forest.
+
+### SVM
+
+```{r}
+# svm_grid = expand.grid(cost = c(1, 2, 3))
+
+# model.svm = runCaret("svmLinear2", adr ~ ., hotel.train, grid = svm_grid , test = hotel.test)
+
+load("bin/svm_reg.RData")
+```
+
+```{r}
+model.svm[[1]]
+```
+
+```{r}
+model.svm[[3]]
+```
+
+Here we can see that the R² is just 0.39, that is a little bit disappointing however, let's see the most important variables
+
+```{r}
+plot(varImp(model.svm[[1]], scale = T), scales = list(y = list(cex = .95)))
+```
+
+And this is impressive! The most important variables are the same as knn, therefore we can conclude that we can add this variables to our hypothesis.
+
+
+## Other Factors
+
+It is true that most of the models that we tried to use are not very good. The main reason is that this data set was not design to predict the average price per night of a hotel, however we have managed to get pretty good results with knn (as far as we could). We could have better results with other models such as random forest or gradient boosting, but we had computational constrains. We tried to reduce the dimensionality of the data set and also the number of rows, however we where unsuccessful. Now let's try to fit the best three models and see if we can get better results.
+
+## Conclusion (Ensamble)
+
+Now, to make our final prediction, we will be using the best three models that in our case were: KNN, Elastic Net, and Forward Regression.
+
+We are using the best three models to predict our final data set.
+
+For this, let's import the three models
+
+```{r}
+rm(list = ls())
+
+load("bin/data_partition_regression_ready_feature.RData")
+
+load("bin/fwdr.RData")
+load("bin/kknn.RData")
+load("bin/elastic.RData")# to create
+```
+
+We are going to use the mean of the models.
+
+```{r}
+finalPrediction = function(data) {
+  pred.fwdr = predict(model.fwdr[[1]], newdata = data)
+  pred.knn = predict(model.knn.reg[[1]], newdata = data)
+  pred.elastic = predict(model.elastic[[1]], newdata = data)
+  
+  finalPred = apply(data.frame(pred.fwdr, pred.knn, pred.elastic), 1, mean) 
+  return(finalPred)
+}
+```
+
+Here we construct the function that will take care of predicting at each model and making the mode. So, now that that's done, let's use the final test data set and see how well can we predict the data.
+
+```{r}
+pred.final = finalPrediction(hotel.test.final[, -1])
+  
+cor(hotel.test.final[, 1], pred.final)^2
+```
+
+And as we saw with classification, doing the ensemble improves by a lot the prediction. It increased 10% the R². Now, let's see our errors.
+
+## Final Predictions
+
+```{r}
+ggplot(as.data.frame(pred.final)) + aes(x = pred.final) + geom_histogram()
+```
+
+It looks pretty much like a normal slightly shifted to the left. We see that there are some predictions that are negative that we could round up to zero. And the most likely hypothesis is due to those observations where adr was 0.
+
+So let's try to compute some prediction intervals so we can assess a customer if the price that they are given is under priced, well priced, or over priced.
+
+## Prediction Intervals
+
+what about the errors?
+
+```{r}
+error = hotel.test.final[, 1] - pred.final
+
+ggplot(as.data.frame(error)) + aes(x = error) + geom_histogram()
+```
+
+This is pretty good. We see that the error of our models is centered at 0 and follows more or less a normal distribution. That is pretty good for the prediction intervals as this will make our predictions more accurate for the lower part, but they will be higher for the upper part.
+
+In order to make the prediction intervals, we will have to use half of the data to get the intervals, otherwise we will overfit the prediction and we won't make the  that accurate. We will use the other half to compute the lower and upper limits.
+
+```{r}
+noise = error[1:(length(error) / 2)]
+```
+
+Because the right part is pretty large, we will compute the 80% confidence interval.
+
+```{r}
+pred.interval.data = pred.final[((length(pred.final) / 2) + 1):length(pred.final)]
+
+lwr = pred.interval.data - abs(quantile(noise,0.1, na.rm=T))
+upr = pred.interval.data + quantile(noise,0.9, na.rm=T)
+```
+
+```{r}
+pred.interval.df = data.frame(real= hotel.test.final[((nrow(hotel.test.final) / 2) + 1):nrow(hotel.test.final), 1], 
+                              fit= pred.interval.data, lwr=lwr, upr=upr)
+
+pred.interval.df = pred.interval.df %>% mutate(out=factor(if_else((real<lwr | real>upr),1,0)))
+
+mean(pred.interval.df$out==1)
+```
+
+So here 0.06% of customers were over priced or under priced according to our model.
+
+```{r}
+ggplot(pred.interval.df, aes(x=fit, y=real))+
+  geom_point(aes(color=out)) + theme(legend.position="none") +
+  xlim(0, 300) + ylim(0, 300)+
+  geom_ribbon(data=pred.interval.df,aes(ymin=lwr,ymax=upr),alpha=0.3) +
+  labs(title = "Prediction intervals", x = "prediction",y="real price")
+```
+
+Here we see that our ensamble model tends to under price the real adr, however it is pretty good. For this we can assess each customer if the are paying more or less than they should. Finally, we can see some zeros values on the real price axis and those are for sure promotions that the hotel runs or error that had so they did not charge reservations for those customers. We would need to add another variable according to this statement as said before to predict those.
+
+# Final Conclusion
+
+After predicting the qualitative variable and the qualitative one, we have clearly seen that this data set is well fit for classification and not for regression. However, all in all we achieved some pretty good results.
+
+Furthermore, we got some pretty god insights on the data and we could assess the hotels to improve their cancellation ratio and tell the customer how much a night should cost.
